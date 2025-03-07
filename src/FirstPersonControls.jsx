@@ -5,10 +5,10 @@ import * as THREE from "three";
 // Controles en primera persona para "caminar" sobre el modelo
 const FirstPersonControls = ({
   active = false,
-  walkSpeed = 60,
+  walkSpeed = 250, // Velocidad aún mayor
   turnSpeed = 1,
   modelRef,
-  elevationOffset = 5, // Altura por encima de la superficie
+  elevationOffset = 10, // Altura por encima de la superficie
 }) => {
   const { camera, gl } = useThree();
   const keysPressed = useRef({});
@@ -16,17 +16,75 @@ const FirstPersonControls = ({
   const raycaster = useRef(new THREE.Raycaster());
   const originalCameraPosition = useRef(null);
   const originalCameraRotation = useRef(null);
+
+  // Sistema simplificado para movimiento fluido
   const targetPosition = useRef(new THREE.Vector3());
-  const targetHeight = useRef(0);
-  const smoothFactor = 0.15; // Factor de suavizado para el movimiento al caminar
+  const fixedHeight = useRef(0);
+  const baseModelHeight = useRef(0);
+  const walkingOffset = useRef(0);
+  const walkingTime = useRef(0);
+
+  // Parámetros para el movimiento fluido
+  const lerpFactor = 0.5; // Factor de interpolación aún mayor
+
+  // Referencias para optimización
+  const forward = useRef(new THREE.Vector3());
+  const right = useRef(new THREE.Vector3());
+  const moveDirection = useRef(new THREE.Vector3());
+
+  // Memoria de dirección para movimiento suave
+  const lastMoveDirection = useRef(new THREE.Vector3());
+  const isMoving = useRef(false);
+
+  // Calcular la altura base del modelo solo una vez
+  const initModelHeight = () => {
+    if (!modelRef.current) return 0;
+
+    try {
+      // Obtener la altura base del modelo calculando un promedio de varios puntos
+      const boundingBox = new THREE.Box3().setFromObject(modelRef.current);
+      const center = boundingBox.getCenter(new THREE.Vector3());
+
+      // Realizar un solo raycast para encontrar una altura aproximada
+      const ray = new THREE.Raycaster(
+        new THREE.Vector3(center.x, boundingBox.max.y + 100, center.z),
+        new THREE.Vector3(0, -1, 0)
+      );
+
+      const hits = ray.intersectObject(modelRef.current, true);
+
+      if (hits.length > 0) {
+        // Si encontramos una intersección, usar esa altura
+        return hits[0].point.y;
+      } else {
+        // Si no, usar el punto más bajo del modelo
+        return boundingBox.min.y;
+      }
+    } catch (error) {
+      console.error("Error al calcular altura del modelo:", error);
+      return 0;
+    }
+  };
 
   // Guardar la posición y rotación original de la cámara
   useEffect(() => {
     if (active && !originalCameraPosition.current) {
       originalCameraPosition.current = camera.position.clone();
       originalCameraRotation.current = camera.rotation.clone();
+
+      // Calcular altura base del modelo solo una vez
+      baseModelHeight.current = initModelHeight();
+
+      // Ajustar la altura fija de la cámara
+      fixedHeight.current = baseModelHeight.current + elevationOffset;
+
+      // Actualizar posición inicial
       targetPosition.current.copy(camera.position);
-      targetHeight.current = camera.position.y;
+      camera.position.y = fixedHeight.current;
+      targetPosition.current.y = fixedHeight.current;
+
+      // Importante para evitar el problema de gimbal lock
+      camera.rotation.order = "YXZ";
     } else if (!active && originalCameraPosition.current) {
       // Restaurar la posición y rotación de la cámara al desactivar
       camera.position.copy(originalCameraPosition.current);
@@ -44,15 +102,20 @@ const FirstPersonControls = ({
         const boundingBox = new THREE.Box3().setFromObject(modelRef.current);
         const center = boundingBox.getCenter(new THREE.Vector3());
 
+        // Calcular altura base una vez
+        baseModelHeight.current = initModelHeight();
+
+        // Ajustar altura fija
+        fixedHeight.current = baseModelHeight.current + elevationOffset;
+
         // Colocar la cámara ligeramente elevada sobre el punto más alto del modelo
         const highPoint = new THREE.Vector3(
           center.x,
-          boundingBox.max.y + elevationOffset,
+          fixedHeight.current,
           center.z
         );
         camera.position.copy(highPoint);
         targetPosition.current.copy(highPoint);
-        targetHeight.current = highPoint.y;
 
         // Orientación inicial (mirando horizontalmente hacia adelante)
         camera.lookAt(new THREE.Vector3(center.x, highPoint.y, center.z - 100));
@@ -104,7 +167,7 @@ const FirstPersonControls = ({
           )
         );
 
-        // Actualizar el vector de dirección
+        // Actualizar el vector de dirección (solo cuando se mueve el ratón)
         lookDirection.current.set(0, 0, -1).applyQuaternion(camera.quaternion);
       } catch (error) {
         console.error("Error al mover la cámara con el ratón:", error);
@@ -146,72 +209,85 @@ const FirstPersonControls = ({
     };
   }, [active, gl.domElement, turnSpeed, camera]);
 
-  // Lógica de movimiento en cada frame - con suavizado simple
+  // Lógica de movimiento en cada frame - Simplificada al máximo
   useFrame((state, delta) => {
     if (!active || !modelRef.current) return;
 
     try {
-      // Vectores de movimiento
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(
-        camera.quaternion
-      );
-      forward.y = 0; // Mantener movimiento horizontal
-      forward.normalize();
+      // Calcular velocidad base con delta time
+      const speed = walkSpeed * delta;
 
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(
-        camera.quaternion
-      );
-      right.y = 0; // Mantener movimiento horizontal
-      right.normalize();
+      // Reusar vectores preexistentes para rendimiento
+      forward.current.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      forward.current.y = 0;
+      forward.current.normalize();
 
-      // Acumular movimiento basado en teclas presionadas
-      const moveVector = new THREE.Vector3(0, 0, 0);
+      right.current.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      right.current.y = 0;
+      right.current.normalize();
 
-      if (keysPressed.current["KeyW"]) moveVector.add(forward);
-      if (keysPressed.current["KeyS"]) moveVector.sub(forward);
-      if (keysPressed.current["KeyA"]) moveVector.sub(right);
-      if (keysPressed.current["KeyD"]) moveVector.add(right);
+      // Comprobar qué teclas están presionadas
+      moveDirection.current.set(0, 0, 0);
 
-      // Si hay movimiento, normalizar y aplicar velocidad
-      if (moveVector.length() > 0) {
-        moveVector.normalize().multiplyScalar(walkSpeed * delta);
+      const wKey = keysPressed.current["KeyW"];
+      const sKey = keysPressed.current["KeyS"];
+      const aKey = keysPressed.current["KeyA"];
+      const dKey = keysPressed.current["KeyD"];
 
-        // Calcular la posición objetivo sumando el movimiento a la posición actual
-        targetPosition.current.copy(camera.position).add(moveVector);
+      // Determinar si se está moviendo
+      const wasMoving = isMoving.current;
+      isMoving.current = wKey || sKey || aKey || dKey;
 
-        // Raycast hacia abajo para encontrar la altura del terreno
-        raycaster.current.set(
-          new THREE.Vector3(
-            targetPosition.current.x,
-            1000,
-            targetPosition.current.z
-          ),
-          new THREE.Vector3(0, -1, 0)
-        );
+      if (wKey) moveDirection.current.add(forward.current);
+      if (sKey) moveDirection.current.sub(forward.current);
+      if (aKey) moveDirection.current.sub(right.current);
+      if (dKey) moveDirection.current.add(right.current);
 
-        const intersects = raycaster.current.intersectObject(
-          modelRef.current,
-          true
-        );
+      // Solo aplicar movimiento si hay dirección
+      if (moveDirection.current.length() > 0) {
+        moveDirection.current.normalize().multiplyScalar(speed);
 
-        if (intersects.length > 0) {
-          // Actualizar la altura objetivo basada en el terreno + offset
-          targetHeight.current = intersects[0].point.y + elevationOffset;
+        // Suavizar dirección para evitar microstuttering
+        moveDirection.current.lerp(lastMoveDirection.current, 0.2);
+        lastMoveDirection.current.copy(moveDirection.current);
+
+        // Actualizar posición objetivo (manteniendo altura fija)
+        targetPosition.current.x = camera.position.x + moveDirection.current.x;
+        targetPosition.current.z = camera.position.z + moveDirection.current.z;
+
+        // Actualizar tiempo para oscilación de caminar
+        walkingTime.current += delta * 10; // Velocidad de oscilación
+
+        // Pequeña oscilación vertical para simular pasos (solo si está caminando)
+        if (isMoving.current) {
+          // Calcular una pequeña oscilación basada en un seno
+          walkingOffset.current = Math.sin(walkingTime.current) * 0.15;
+        } else {
+          // Reducir gradualmente la oscilación al detenerse
+          walkingOffset.current *= 0.9;
         }
+
+        // Aplicar altura base más oscilación
+        targetPosition.current.y = fixedHeight.current + walkingOffset.current;
+      } else {
+        // Reducir dirección residual al detenerse
+        lastMoveDirection.current.multiplyScalar(0.7);
+
+        // Reducir efecto de oscilación al detenerse
+        walkingOffset.current *= 0.9;
+
+        // Mantener la posición actual
+        targetPosition.current.copy(camera.position);
+        targetPosition.current.y = fixedHeight.current + walkingOffset.current;
       }
 
-      // Aplicar suavizado al movimiento - movernos hacia la posición objetivo
-      if (!targetPosition.current.equals(camera.position)) {
-        // Mover horizontalmente con interpolación
-        camera.position.x +=
-          (targetPosition.current.x - camera.position.x) * smoothFactor;
-        camera.position.z +=
-          (targetPosition.current.z - camera.position.z) * smoothFactor;
-
-        // Suavizar también la altura
-        camera.position.y +=
-          (targetHeight.current - camera.position.y) * smoothFactor;
-      }
+      // Aplicar movimiento con interpolación fuerte para mayor suavidad
+      camera.position.x +=
+        (targetPosition.current.x - camera.position.x) * lerpFactor;
+      camera.position.z +=
+        (targetPosition.current.z - camera.position.z) * lerpFactor;
+      camera.position.y +=
+        (targetPosition.current.y - camera.position.y) * lerpFactor;
     } catch (error) {
       console.error("Error en el movimiento de la cámara:", error);
     }
