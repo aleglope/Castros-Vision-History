@@ -1,0 +1,6 @@
+version: '3.8'
+services:
+  gltf-compressor:
+    build: .
+    volumes:
+      - ./output:/usr/src/app/DRACO # Mapea el directorio de salida al directorio de trabajo del contenedor.
