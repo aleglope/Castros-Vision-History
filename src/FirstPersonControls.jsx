@@ -16,12 +16,17 @@ const FirstPersonControls = ({
   const raycaster = useRef(new THREE.Raycaster());
   const originalCameraPosition = useRef(null);
   const originalCameraRotation = useRef(null);
+  const targetPosition = useRef(new THREE.Vector3());
+  const targetHeight = useRef(0);
+  const smoothFactor = 0.15; // Factor de suavizado para el movimiento al caminar
 
   // Guardar la posición y rotación original de la cámara
   useEffect(() => {
     if (active && !originalCameraPosition.current) {
       originalCameraPosition.current = camera.position.clone();
       originalCameraRotation.current = camera.rotation.clone();
+      targetPosition.current.copy(camera.position);
+      targetHeight.current = camera.position.y;
     } else if (!active && originalCameraPosition.current) {
       // Restaurar la posición y rotación de la cámara al desactivar
       camera.position.copy(originalCameraPosition.current);
@@ -46,6 +51,8 @@ const FirstPersonControls = ({
           center.z
         );
         camera.position.copy(highPoint);
+        targetPosition.current.copy(highPoint);
+        targetHeight.current = highPoint.y;
 
         // Orientación inicial (mirando horizontalmente hacia adelante)
         camera.lookAt(new THREE.Vector3(center.x, highPoint.y, center.z - 100));
@@ -139,7 +146,7 @@ const FirstPersonControls = ({
     };
   }, [active, gl.domElement, turnSpeed, camera]);
 
-  // Lógica de movimiento en cada frame - sistema simple y directo
+  // Lógica de movimiento en cada frame - con suavizado simple
   useFrame((state, delta) => {
     if (!active || !modelRef.current) return;
 
@@ -169,12 +176,16 @@ const FirstPersonControls = ({
       if (moveVector.length() > 0) {
         moveVector.normalize().multiplyScalar(walkSpeed * delta);
 
-        // Nueva posición posible
-        const newPosition = camera.position.clone().add(moveVector);
+        // Calcular la posición objetivo sumando el movimiento a la posición actual
+        targetPosition.current.copy(camera.position).add(moveVector);
 
         // Raycast hacia abajo para encontrar la altura del terreno
         raycaster.current.set(
-          new THREE.Vector3(newPosition.x, 1000, newPosition.z),
+          new THREE.Vector3(
+            targetPosition.current.x,
+            1000,
+            targetPosition.current.z
+          ),
           new THREE.Vector3(0, -1, 0)
         );
 
@@ -184,10 +195,22 @@ const FirstPersonControls = ({
         );
 
         if (intersects.length > 0) {
-          // Ajustar la altura basada en el terreno + offset
-          newPosition.y = intersects[0].point.y + elevationOffset;
-          camera.position.copy(newPosition);
+          // Actualizar la altura objetivo basada en el terreno + offset
+          targetHeight.current = intersects[0].point.y + elevationOffset;
         }
+      }
+
+      // Aplicar suavizado al movimiento - movernos hacia la posición objetivo
+      if (!targetPosition.current.equals(camera.position)) {
+        // Mover horizontalmente con interpolación
+        camera.position.x +=
+          (targetPosition.current.x - camera.position.x) * smoothFactor;
+        camera.position.z +=
+          (targetPosition.current.z - camera.position.z) * smoothFactor;
+
+        // Suavizar también la altura
+        camera.position.y +=
+          (targetHeight.current - camera.position.y) * smoothFactor;
       }
     } catch (error) {
       console.error("Error en el movimiento de la cámara:", error);
