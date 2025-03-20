@@ -17,30 +17,22 @@ export const SIGN_ROTATION = {
   z: 0.02,
 };
 
-// Configuración del océano avanzado (Gerstner)
+// Configuración del océano (modelo 3D)
 export const OCEAN_CONFIG = {
   position: {
     x: 0,
     y: -100,
     z: 0,
   },
-  size: {
-    width: 20000,
-    length: 20000,
-  },
-  resolution: [256, 256],
-  color: {
-    depth: "#1e88e5", // Azul más claro y brillante
-    surface: "#b3e5fc", // Azul claro con tono celeste
-  },
-  waves: {
-    bigWavesElevation: 1.2, // Aumentado de 0.5 a 1.2 para olas mucho más altas
-    bigWavesFrequency: [1.2, 0.8], // Frecuencia reducida para olas más grandes y dramáticas
-    bigWaveSpeed: 1.5, // Aumentado para movimiento más rápido y dinámico
-    smallWavesElevation: 0.4, // Aumentado para más detalle en las crestas
-    smallWavesFrequency: 1.8, // Ajustado para mejor visualización
-    smallWavesSpeed: 0.6, // Aumentado para mayor energía visual
-    smallWavesIterations: 5, // Aumentado para más detalle en la espuma
+  // Configuración del clima hostil
+  stormSettings: {
+    enabled: true,
+    rainIntensity: 0.7, // 0-1
+    waveStrength: 0.8, // 0-1, fuerza de las olas
+    cloudDensity: 0.9, // 0-1
+    lightning: true,
+    fogDensity: 0.6, // 0-1
+    windSpeed: 0.75, // 0-1
   },
 };
 
@@ -53,6 +45,10 @@ export const CAMERA_VIEWS = {
   oceanView: {
     position: { x: 500, y: 200, z: 500 },
     lookAt: { x: 0, y: -100, z: 0 },
+  },
+  stormView: {
+    position: { x: 300, y: 100, z: 300 },
+    lookAt: { x: 0, y: -50, z: 0 },
   },
 };
 
